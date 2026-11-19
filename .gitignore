@@ -1,0 +1,8 @@
+# Raw data
+data/
+
+# R and Positron temporary files
+.Rproj.user/
+.Rhistory
+.RData
+.quarto/

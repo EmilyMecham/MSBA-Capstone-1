@@ -1,0 +1,1422 @@
+
+---
+title: "Home Credit Default Risk: Exploratory Data Analysis"
+subtitle: "MSBA Analytics Project"
+author: "Emily Mecham"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: false
+    embed-resources: true
+execute:
+  echo: true
+  warning: false
+  message: false
+  error: false
+  fig-width: 9
+  fig-height: 5.5
+  out-width: "100%"
+---
+
+# Introduction
+
+## Business Understanding
+
+Home Credit Group seeks to expand financial inclusion by providing consumer loans to individuals who may have limited or nonexistent traditional credit histories. Evaluating these applicants presents a challenge: traditional credit information may not fully reflect an individual's ability or willingness to repay a loan.
+
+Inaccurate lending decisions create competing business risks. Approving applicants who cannot repay loans can result in financial losses, while rejecting applicants who are capable of repayment limits revenue opportunities and restricts access to credit.
+
+This project uses exploratory data analysis (EDA) to investigate applicant characteristics, identify patterns associated with payment difficulties, and evaluate the quality and suitability of the available data for predictive modeling.
+
+## Analytical Objectives
+
+The primary objective is to understand the factors associated with payment difficulties among Home Credit applicants and identify opportunities to improve lending decisions.
+
+The analysis will explore the following questions:
+
+1. What proportion of applicants in the historical training data experience payment difficulties?
+2. How are applicant demographics, financial characteristics, and employment histories distributed?
+3. Which applicant characteristics appear to be associated with payment difficulties?
+4. What data quality issues, including missing values, duplicates, and unusual or potentially invalid values, exist in the application data?
+5. Are there relationships between applicant characteristics that may be useful for predicting payment difficulties?
+6. How might the findings influence data preparation and subsequent predictive modeling?
+
+## Expected Business Value
+
+The project will explore opportunities to reduce payment difficulties among approved borrowers by 5% while increasing approvals among applicants who demonstrate repayment capability by 5%, relative to an established baseline.
+
+These are proposed improvement targets rather than demonstrated outcomes. Exploratory findings and subsequent predictive modeling will help determine whether these objectives are analytically and operationally feasible.
+
+## Scope
+
+This phase focuses on the two primary application datasets:
+
+- `application_train.csv`
+- `application_test.csv`
+
+The training dataset contains historical applicant information and the observed payment difficulty outcome. The test dataset contains applicant information without the observed outcome.
+
+Supplementary datasets are outside the scope of this EDA phase.
+
+# Data Preparation and Setup
+
+## Load Required Packages
+
+The following packages support data importation, cleaning, manipulation, visualization, and exploratory analysis.
+```{r}
+# Load packages required for exploratory data analysis
+library(tidyverse)
+library(janitor)
+library(skimr)
+library(naniar)
+library(scales)
+library(here)
+```
+
+## Import Application Data
+
+The Home Credit Default Risk competition provides two primary application datasets. The training dataset contains historical loan applications with an observed outcome variable indicating whether the applicant experienced payment difficulties. The test dataset contains application records without the outcome variable.
+
+Both datasets will be imported and examined to understand their structure, dimensions, and suitability for exploratory analysis.
+```{r}
+
+# Identify the project root directory
+here::i_am("notebooks/home-credit-eda.qmd")
+
+# Import the training dataset and standardize column names
+application_train <- read_csv(
+  here("data", "application_train.csv"),
+  show_col_types = FALSE
+) %>%
+  clean_names()
+
+# Import the test dataset and standardize column names
+application_test <- read_csv(
+  here("data", "application_test.csv"),
+  show_col_types = FALSE
+) %>%
+  clean_names()
+```
+
+## Dataset Dimensions
+
+Before conducting further analysis, it is important to understand the size and structure of each application dataset. The number of observations and variables provides an initial overview of the information available for analysis.
+```{r}
+
+# Compare the dimensions of the training and test datasets
+dataset_dimensions <- tibble(
+  dataset = c("Training", "Test"),
+  observations = c(
+    nrow(application_train),
+    nrow(application_test)
+  ),
+  variables = c(
+    ncol(application_train),
+    ncol(application_test)
+  )
+)
+
+# Display dataset dimensions
+dataset_dimensions
+```
+
+## Target Variable Distribution
+
+The target variable identifies whether an applicant experienced payment difficulties. A value of 1 indicates payment difficulties, while a value of 0 indicates no recorded payment difficulties.
+
+Understanding the distribution of this variable is important because an uneven distribution between the two outcomes may affect predictive modeling and the selection of appropriate evaluation metrics.
+```{r}
+
+# Count applicants in each target category
+target_distribution <- application_train %>%
+  count(target, name = "applicants") %>%
+  mutate(
+    percentage = applicants / sum(applicants),
+    outcome = factor(
+      target,
+      levels = c(0, 1),
+      labels = c("No payment difficulties", "Payment difficulties")
+    )
+  )
+
+# Display target distribution
+target_distribution
+
+# Visualize the target distribution
+ggplot(target_distribution, aes(x = outcome, y = applicants)) +
+  geom_col(fill = "#5478C7") +
+  geom_text(
+    aes(label = comma(applicants)),
+    vjust = -0.5
+  ) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Distribution of Payment Difficulty Outcomes",
+    subtitle = "Home Credit training dataset",
+    x = "Loan repayment outcome",
+    y = "Number of applicants"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 10, hjust = 1)
+  )
+```
+
+
+The training dataset contains 307,511 loan applications, of which 24,825 (8.07%) resulted in payment difficulties. The remaining 282,686 applicants (91.93%) did not experience recorded payment difficulties.
+
+This distribution reveals a substantial class imbalance, with applicants experiencing payment difficulties representing a relatively small proportion of the training population. Consequently, a predictive model that simply classifies every applicant as having no payment difficulties could achieve approximately 91.93% accuracy while failing to identify any applicants who experienced payment difficulties.
+
+This finding has important implications for subsequent model development. Accuracy alone will not adequately measure model performance. Evaluation metrics such as recall, precision, and AUC will be important for assessing the model's ability to identify payment difficulties while considering the business consequences of lending decisions.
+
+# Data Description
+
+## Dataset Structure and Composition
+
+The Home Credit application data consists of separate training and test datasets. Both contain applicant and loan application characteristics, while only the training dataset includes the observed payment difficulty outcome.
+
+The training dataset provides the historical outcomes necessary to investigate relationships between applicant characteristics and repayment performance. The test dataset contains additional applications for which the outcome is not provided.
+
+Understanding the structure, variable composition, and level of observation is necessary before conducting more detailed exploratory analysis.
+```{r}
+
+# Compare the structure of the training and test datasets
+data_structure <- tibble(
+  dataset = c("Training", "Test"),
+  observations = c(
+    nrow(application_train),
+    nrow(application_test)
+  ),
+  variables = c(
+    ncol(application_train),
+    ncol(application_test)
+  ),
+  unique_applicants = c(
+    n_distinct(application_train$sk_id_curr),
+    n_distinct(application_test$sk_id_curr)
+  )
+)
+
+data_structure
+
+# Examine variable data types in the training dataset
+variable_types <- application_train %>%
+  summarise(
+    across(
+      everything(),
+      ~ class(.x)[1]
+    )
+  ) %>%
+  pivot_longer(
+    everything(),
+    names_to = "variable",
+    values_to = "data_type"
+  ) %>%
+  count(data_type, name = "number_of_variables")
+
+variable_types
+```
+
+## Variable Inventory
+
+The application datasets contain a broad range of applicant characteristics and financial information. These variables provide potential indicators of repayment capacity and financial risk.
+
+A variable inventory helps identify the types of information available, distinguish the outcome variable from applicant characteristics, and identify potential data preparation requirements.
+```{r}
+
+# Create an inventory of all training dataset variables
+variable_inventory <- tibble(
+  variable = names(application_train),
+  data_type = map_chr(
+    application_train,
+    ~ class(.x)[1]
+  ),
+  missing_count = map_int(
+    application_train,
+    ~ sum(is.na(.x))
+  ),
+  missing_percentage = map_dbl(
+    application_train,
+    ~ mean(is.na(.x)) * 100
+  )
+) %>%
+  arrange(desc(missing_percentage))
+
+# Display the first 25 variables with the most missing data
+variable_inventory %>%
+  slice_head(n = 25) %>%
+  mutate(
+    missing_percentage = round(missing_percentage, 2)
+  )
+```
+
+## Application Grain and Identifier Integrity
+
+The `SK_ID_CURR` variable serves as the application identifier. Because the analysis assumes one record per application, duplicate identifiers could indicate unexpected duplication or inconsistencies in the dataset.
+
+The training and test datasets should also contain distinct application records. These assumptions will be evaluated before proceeding with more detailed analysis.
+```{r}
+# Check for duplicate application identifiers
+identifier_checks <- tibble(
+  dataset = c("Training", "Test"),
+  total_records = c(
+    nrow(application_train),
+    nrow(application_test)
+  ),
+  unique_ids = c(
+    n_distinct(application_train$sk_id_curr),
+    n_distinct(application_test$sk_id_curr)
+  ),
+  duplicate_ids = c(
+    sum(duplicated(application_train$sk_id_curr)),
+    sum(duplicated(application_test$sk_id_curr))
+  )
+)
+
+identifier_checks
+
+# Check whether application IDs overlap between datasets
+overlapping_ids <- intersect(
+  application_train$sk_id_curr,
+  application_test$sk_id_curr
+)
+
+length(overlapping_ids)
+```
+
+The training dataset contains 307,511 observations and 122 variables, while the test dataset contains 48,744 observations and 121 variables. Both datasets contain unique applicant counts equal to their respective observation counts, consistent with the expected one-record-per-application structure.
+
+The training dataset contains 106 numeric variables and 16 character variables. However, storage types do not necessarily reflect the analytical measurement level of each variable. Some numeric variables may represent categorical indicators or coded classifications and will require further examination.
+
+An initial examination of missingness reveals substantial gaps in several housing-related variables. For example, `commonarea_avg`, `commonarea_mode`, and `commonarea_medi` each have approximately 69.9% missing values. Several other property-related variables have similar levels of missingness.
+
+These findings suggest that data completeness will be an important consideration during preparation. Rather than immediately removing variables or observations with missing values, further investigation is necessary to determine whether missingness is associated with applicant characteristics or payment difficulty outcomes.
+
+The identifier integrity checks found no duplicate application IDs in either dataset. All 307,511 training records and 48,744 test records have unique `SK_ID_CURR` values. Additionally, no application IDs overlap between the training and test datasets.
+
+These findings support the expected one-record-per-application structure and indicate that duplicate application identifiers are not an immediate data quality concern. The absence of overlapping IDs also confirms that the two datasets contain separate application records.
+
+## Investigation of Unusual Employment Values
+
+The `DAYS_EMPLOYED` variable represents the number of days between an applicant's employment start date and the loan application date. Because employment began before the application date for currently employed applicants, values are generally expected to be negative.
+
+An unusually large positive value of 365,243 appears in this variable within the Home Credit dataset. This value requires investigation because it does not represent a plausible conventional employment duration.
+
+The analysis will examine the frequency of this value, the overall distribution of employment durations, and its relationship with payment difficulty outcomes.
+```{r}
+# Summarize employment duration values
+employment_summary <- application_train %>%
+  summarise(
+    minimum_days = min(days_employed, na.rm = TRUE),
+    maximum_days = max(days_employed, na.rm = TRUE),
+    median_days = median(days_employed, na.rm = TRUE),
+    sentinel_count = sum(days_employed == 365243, na.rm = TRUE),
+    sentinel_percentage = mean(days_employed == 365243, na.rm = TRUE) * 100,
+    positive_values = sum(days_employed > 0 & days_employed != 365243, na.rm = TRUE)
+  )
+
+employment_summary
+```
+```{r}
+
+# Compare payment difficulty rates by employment value category
+employment_outcomes <- application_train %>%
+  mutate(
+    employment_category = if_else(
+      days_employed == 365243,
+      "Unusual placeholder value",
+      "Other employment values"
+    )
+  ) %>%
+  group_by(employment_category) %>%
+  summarise(
+    applicants = n(),
+    payment_difficulties = sum(target == 1),
+    difficulty_rate = mean(target) * 100,
+    .groups = "drop"
+  )
+
+employment_outcomes
+```
+
+
+The `DAYS_EMPLOYED` variable contains an unusual positive value of 365,243, appearing in 55,374 observations (18.0% of the training dataset). Because employment duration is measured relative to the application date, this value is not a plausible conventional employment duration and should be treated as a special coded value rather than a literal numerical observation.
+
+Further investigation reveals a difference in payment difficulty rates between applicants with this value and those with other employment values. Applicants with the unusual value have a payment difficulty rate of 5.40%, compared with 8.66% among applicants with other values.
+
+This difference suggests that the special value may identify a population with distinct characteristics and potentially useful predictive information. However, the relationship does not establish that employment status causes differences in repayment outcomes.
+
+The original value should be preserved during exploratory analysis. Subsequent data preparation should investigate the meaning of the code and consider separating it from actual employment duration, potentially through a categorical indicator variable.
+
+The investigation also confirmed that 365,243 is the only positive value in the employment duration variable. No other positive employment durations were identified, further supporting the conclusion that this value represents a special code rather than a conventional employment duration.
+
+```{r}
+# Examine employment values that are positive,
+# excluding the unusual value of 365243
+application_train %>%
+  filter(
+    days_employed > 0,
+    days_employed != 365243
+  ) %>%
+  nrow()
+```
+
+# Data Integrity and Missingness
+
+## Overall Missing Data Assessment
+
+Missing data can affect the reliability of statistical analysis and predictive modeling. Variables with substantial missingness may provide incomplete information about applicants, while patterns of missingness may reveal differences in how information is collected across applicant populations.
+
+This section examines the frequency and proportion of missing observations across the application training dataset. Missingness will be evaluated at the variable level before decisions are made about potential data preparation strategies.
+```{r}
+
+# Calculate missing values for every variable in the training dataset
+missing_summary <- application_train %>%
+  summarise(
+    across(
+      everything(),
+      ~ sum(is.na(.x))
+    )
+  ) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "variable",
+    values_to = "missing_count"
+  ) %>%
+  mutate(
+    total_records = nrow(application_train),
+    missing_percentage = missing_count / total_records * 100
+  ) %>%
+  arrange(desc(missing_percentage))
+
+# Display overall missingness statistics
+missing_summary %>%
+  summarise(
+    total_variables = n(),
+    variables_with_missing = sum(missing_count > 0),
+    variables_without_missing = sum(missing_count == 0),
+    total_missing_cells = sum(missing_count),
+    average_missing_percentage = mean(missing_percentage),
+    maximum_missing_percentage = max(missing_percentage)
+  )
+```
+```{r}
+
+# Display the 20 variables with the highest missingness
+top_missing_variables <- missing_summary %>%
+  filter(missing_count > 0) %>%
+  slice_max(
+    order_by = missing_percentage,
+    n = 20,
+    with_ties = FALSE
+  )
+
+top_missing_variables %>%
+  select(
+    variable,
+    missing_count,
+    missing_percentage
+  ) %>%
+  mutate(
+    missing_percentage = round(missing_percentage, 2)
+  )
+```
+```{r}
+
+# Visualize the 20 variables with the highest missingness
+ggplot(
+  top_missing_variables,
+  aes(
+    x = reorder(variable, missing_percentage),
+    y = missing_percentage
+  )
+) +
+  geom_col(fill = "#5478C7") +
+  geom_text(
+    aes(label = paste0(round(missing_percentage, 1), "%")),
+    hjust = -0.15,
+    size = 3
+  ) +
+  coord_flip() +
+  scale_y_continuous(
+    limits = c(0, 85),
+    labels = label_percent(scale = 1)
+  ) +
+  labs(
+    title = "Variables with the Highest Missing Data",
+    subtitle = "Top 20 variables in the Home Credit training dataset",
+    x = "Variable",
+    y = "Missing observations (%)"
+  ) +
+  theme_minimal()
+```
+```{r}
+
+# Count applicants with at least one missing value
+applicant_missingness <- application_train %>%
+  mutate(
+    missing_variable_count = rowSums(is.na(across(everything())))
+  ) %>%
+  summarise(
+    total_applicants = n(),
+    applicants_with_missing = sum(missing_variable_count > 0),
+    applicants_without_missing = sum(missing_variable_count == 0),
+    percentage_with_missing = mean(missing_variable_count > 0) * 100,
+    average_missing_variables = mean(missing_variable_count)
+  )
+
+applicant_missingness
+```
+
+The missingness assessment identified substantial data completeness challenges within the training dataset. Of the 122 variables examined, 67 contain missing values, while 55 have complete observations. Across the dataset, approximately 9.15 million individual cells are missing.
+
+At the applicant level, 298,909 of 307,511 applicants (97.2%) have at least one missing value. Applicants have an average of approximately 29.8 variables with missing information. Only 8,602 applicants (2.8%) have complete records across all 122 variables.
+
+The most incomplete variables are concentrated in housing and property characteristics, including common area measurements, apartment characteristics, building information, and land area. Several related variables have identical missingness counts, suggesting that their missingness patterns may be connected.
+
+These findings indicate that removing all applicants with missing information would eliminate approximately 97.2% of the training population. Complete-case analysis is therefore not an appropriate general strategy for this project. Missing values will need to be evaluated at the variable level, with potential approaches including targeted imputation, missingness indicators, and exclusion of individual variables when their analytical value does not justify their incompleteness.
+
+Further investigation will examine whether missingness is associated with payment difficulty, as this could indicate that missing information itself contains useful predictive information.
+
+## Relationship Between Missingness and Payment Difficulty
+
+Missing information may reflect differences in applicant characteristics, information availability, or data collection processes. These differences could also be associated with repayment outcomes.
+
+To investigate whether missingness contains potentially useful information, applicants will be grouped according to whether selected variables are missing or observed. Payment difficulty rates will then be compared between the groups.
+
+This analysis will help determine whether missingness should be considered during subsequent data preparation and predictive modeling.
+```{r}
+
+# Select the ten variables with the highest missingness
+variables_to_investigate <- top_missing_variables$variable[1:10]
+
+# Compare payment difficulty rates for missing and observed values
+missingness_outcomes <- map_dfr(
+  variables_to_investigate,
+  function(variable_name) {
+
+    application_train %>%
+      mutate(
+        missing_status = if_else(
+          is.na(.data[[variable_name]]),
+          "Missing",
+          "Observed"
+        )
+      ) %>%
+      group_by(missing_status) %>%
+      summarise(
+        applicants = n(),
+        payment_difficulties = sum(target == 1),
+        difficulty_rate = mean(target) * 100,
+        .groups = "drop"
+      ) %>%
+      mutate(variable = variable_name)
+  }
+)
+
+# Display the results
+missingness_outcomes %>%
+  select(
+    variable,
+    missing_status,
+    applicants,
+    difficulty_rate
+  ) %>%
+  mutate(
+    difficulty_rate = round(difficulty_rate, 2)
+  )
+```
+```{r}
+
+# Compare payment difficulty rates across missingness groups
+ggplot(
+  missingness_outcomes,
+  aes(
+    x = missing_status,
+    y = difficulty_rate,
+    fill = missing_status
+  )
+) +
+  geom_col(width = 0.6) +
+  geom_text(
+    aes(label = paste0(round(difficulty_rate, 2), "%")),
+    vjust = -0.5,
+    size = 3
+  ) +
+  facet_wrap(~ variable, scales = "free_y", ncol = 2) +
+   scale_y_continuous(
+    limits = c(0, 10),
+    breaks = seq(0, 10, 2),
+    expand = expansion(mult = c(0, 0.15))
+  ) +
+  labs(
+    title = "Payment Difficulty Rates by Missingness Status",
+    subtitle = "Comparison across the ten most incomplete variables",
+    x = "Data availability",
+    y = "Payment difficulty rate (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    strip.text = element_text(face = "bold")
+  )
+```
+
+The comparison of payment difficulty rates across missingness groups reveals a consistent relationship between incomplete housing information and repayment outcomes. Across the ten most incomplete variables, applicants with missing values generally experience higher payment difficulty rates than applicants with observed values.
+
+For example, applicants with missing `commonarea_avg` information have a payment difficulty rate of 8.57%, compared with 6.91% among applicants with observed values. Similar differences appear across the nonliving apartment, living apartment, and building renovation variables, with missingness associated with payment difficulty rates approximately 1.66 to 1.73 percentage points higher.
+
+Several related variables exhibit identical missingness counts and nearly identical repayment outcomes. This suggests that their missingness patterns may be connected and should not necessarily be interpreted as independent predictive signals.
+
+These findings indicate that missing housing information may contain useful information for understanding applicant repayment risk. However, the observed relationships do not establish causation or explain why information is unavailable. Further investigation is needed to determine whether missingness reflects differences in applicant characteristics, information collection practices, or other underlying factors.
+
+The findings support retaining missingness information for further investigation during data preparation rather than automatically removing incomplete observations.
+
+### Financial and Employment Information
+
+Applicant financial characteristics and external credit information may provide important indicators of repayment capacity. This section examines the availability of external credit scores, occupation information, employment history, income, and requested credit amounts.
+
+The analysis will first investigate missingness in these variables and compare payment difficulty rates between applicants with available and unavailable information.
+
+```{r}
+
+# Identify variables selected for financial and employment analysis
+risk_variables <- c(
+  "ext_source_1",
+  "ext_source_2",
+  "ext_source_3",
+  "occupation_type",
+  "days_employed",
+  "amt_income_total",
+  "amt_credit"
+)
+
+# Confirm all selected variables are present
+risk_variables %in% names(application_train)
+```
+
+### Missingness versus payment difficulty
+```{r}
+
+# Compare payment difficulty rates by information availability
+financial_missingness <- map_dfr(
+  risk_variables,
+  function(variable_name) {
+
+    application_train %>%
+      mutate(
+        information_status = if_else(
+          is.na(.data[[variable_name]]),
+          "Missing",
+          "Observed"
+        )
+      ) %>%
+      group_by(information_status) %>%
+      summarise(
+        applicants = n(),
+        payment_difficulties = sum(target == 1),
+        difficulty_rate = mean(target) * 100,
+        .groups = "drop"
+      ) %>%
+      mutate(variable = variable_name)
+  }
+)
+
+# Display results
+financial_missingness %>%
+  select(
+    variable,
+    information_status,
+    applicants,
+    difficulty_rate
+  ) %>%
+  mutate(
+    difficulty_rate = round(difficulty_rate, 2)
+  )
+```
+
+
+The investigation of financial and employment information revealed differences in payment difficulty rates based on information availability.
+
+Among applicants with missing `EXT_SOURCE_1` scores, the payment difficulty rate is 8.52%, compared with 7.50% among applicants with observed scores. A similar pattern appears for `EXT_SOURCE_3`, where applicants with missing scores have a payment difficulty rate of 9.31%, compared with 7.77% among applicants with observed scores.
+
+In contrast, `EXT_SOURCE_2` has very little missing information, with only 660 applicants lacking a score. The payment difficulty rates between the missing and observed groups are relatively similar, although the small missing group limits the reliability of this comparison.
+
+Occupation information reveals an unexpected relationship. Applicants with missing `OCCUPATION_TYPE` information have a payment difficulty rate of 6.51%, compared with 8.79% among applicants with observed occupation information. This difference suggests that missing occupation information may reflect underlying differences in applicant populations or information collection practices.
+
+The `DAYS_EMPLOYED`, `AMT_INCOME_TOTAL`, and `AMT_CREDIT` variables contain no missing observations. However, the employment variable still contains the previously identified special coded value.
+
+Overall, these findings suggest that information availability may itself provide useful context for understanding repayment outcomes. Missingness indicators may warrant consideration during predictive modeling, although further investigation is needed before determining how these variables should be handled.
+
+### Visualization of missingness patterns
+```{r}
+
+# Visualize payment difficulty rates by financial information availability
+ggplot(
+  financial_missingness,
+  aes(
+    x = information_status,
+    y = difficulty_rate,
+    fill = information_status
+  )
+) +
+  geom_col(width = 0.6) +
+  geom_text(
+    aes(label = paste0(round(difficulty_rate, 2), "%")),
+    vjust = -0.5,
+    size = 3
+  ) +
+  facet_wrap(~ variable, ncol = 2) +
+  scale_fill_manual(
+    values = c(
+      "Missing" = "#D18B55",
+      "Observed" = "#5478C7"
+    )
+  ) +
+  scale_y_continuous(
+    limits = c(0, 12),
+    breaks = seq(0, 12, 2),
+    expand = expansion(mult = c(0, 0.12))
+  ) +
+  labs(
+    title = "Payment Difficulty by Financial Information Availability",
+    subtitle = "Comparing applicants with missing and observed information",
+    x = "Information availability",
+    y = "Payment difficulty rate (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    strip.text = element_text(face = "bold")
+  )
+```
+
+# Exploratory Analysis of Applicant Characteristics
+
+## External Credit Score Distributions
+
+The external credit score variables provide additional information that may help distinguish applicants with different levels of repayment risk.
+
+This section examines the distributions of the three external credit score variables and compares their values across observed payment difficulty outcomes.
+
+The analysis will focus on differences in score distributions and whether lower or higher scores appear to be associated with payment difficulties.
+
+### Summary statistics
+```{r}
+# Summarize external credit score distributions
+credit_score_summary <- application_train %>%
+  summarise(
+    across(
+      c(ext_source_1, ext_source_2, ext_source_3),
+      list(
+        mean = ~ mean(.x, na.rm = TRUE),
+        median = ~ median(.x, na.rm = TRUE),
+        sd = ~ sd(.x, na.rm = TRUE),
+        minimum = ~ min(.x, na.rm = TRUE),
+        maximum = ~ max(.x, na.rm = TRUE)
+      )
+    )
+  ) %>%
+  pivot_longer(
+    everything(),
+    names_to = c("variable", ".value"),
+    names_pattern = "(ext_source_\\d+)_(.*)"
+  )
+
+credit_score_summary
+```
+
+### Compare scores by payment difficulty
+```{r}
+
+# Calculate external credit score statistics by repayment outcome
+credit_score_by_target <- application_train %>%
+  group_by(target) %>%
+  summarise(
+    across(
+      c(ext_source_1, ext_source_2, ext_source_3),
+      list(
+        mean = ~ mean(.x, na.rm = TRUE),
+        median = ~ median(.x, na.rm = TRUE)
+      )
+    ),
+    applicants = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    outcome = if_else(
+      target == 1,
+      "Payment difficulties",
+      "No payment difficulties"
+    )
+  )
+
+credit_score_by_target
+```
+
+### Visualize score distributions by payment difficulty
+```{r}
+
+# Reshape credit scores for visualization
+credit_score_long <- application_train %>%
+  select(
+    target,
+    ext_source_1,
+    ext_source_2,
+    ext_source_3
+  ) %>%
+  mutate(
+    outcome = factor(
+      target,
+      levels = c(0, 1),
+      labels = c(
+        "No payment difficulties",
+        "Payment difficulties"
+      )
+    )
+  ) %>%
+  pivot_longer(
+    cols = starts_with("ext_source"),
+    names_to = "credit_score",
+    values_to = "score"
+  ) %>%
+  filter(!is.na(score))
+
+# Compare score distributions by repayment outcome
+ggplot(
+  credit_score_long,
+  aes(
+    x = outcome,
+    y = score,
+    fill = outcome
+  )
+) +
+ geom_boxplot(
+  outlier.alpha = 0.1
+) +
+scale_fill_manual(
+  name = "Repayment outcome",
+  values = c(
+    "No payment difficulties" = "#5478C7",
+    "Payment difficulties" = "#D18B55"
+  )
+) +
+  labs(
+    title = "External Credit Scores by Payment Difficulty Outcome",
+    subtitle = "Comparison of observed applicant credit scores",
+    x = "Loan repayment outcome",
+    y = "External credit score"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 15, hjust = 1),
+    strip.text = element_text(face = "bold")
+  )
+```
+
+
+## Income and Requested Credit Amounts
+
+Applicant income and requested credit amounts are important considerations when evaluating repayment capacity. Understanding the distribution of these variables can help identify differences in applicant financial profiles, unusual observations, and potential indicators of repayment risk.
+
+This section examines the distributions of total applicant income and requested credit amounts, including measures of central tendency, variability, and extreme values.
+
+```{r}
+
+# Summarize applicant income and requested credit amounts
+financial_summary <- application_train %>%
+  summarise(
+    across(
+      c(amt_income_total, amt_credit),
+      list(
+        mean = ~ mean(.x, na.rm = TRUE),
+        median = ~ median(.x, na.rm = TRUE),
+        sd = ~ sd(.x, na.rm = TRUE),
+        minimum = ~ min(.x, na.rm = TRUE),
+        p25 = ~ quantile(.x, 0.25, na.rm = TRUE),
+        p75 = ~ quantile(.x, 0.75, na.rm = TRUE),
+        p95 = ~ quantile(.x, 0.95, na.rm = TRUE),
+        p99 = ~ quantile(.x, 0.99, na.rm = TRUE),
+        maximum = ~ max(.x, na.rm = TRUE)
+      )
+    )
+  ) %>%
+  pivot_longer(
+    everything(),
+    names_to = c("variable", ".value"),
+    names_pattern = "(amt_\\w+)_(.*)"
+  )
+
+financial_summary
+```
+```{r}
+
+# Check for zero, negative, and missing financial values
+financial_integrity <- application_train %>%
+  summarise(
+    across(
+      c(amt_income_total, amt_credit),
+      list(
+        missing = ~ sum(is.na(.x)),
+        zero = ~ sum(.x == 0, na.rm = TRUE),
+        negative = ~ sum(.x < 0, na.rm = TRUE)
+      )
+    )
+  ) %>%
+  pivot_longer(
+    everything(),
+    names_to = c("variable", ".value"),
+    names_pattern = "(amt_\\w+)_(.*)"
+  )
+
+financial_integrity
+```
+```{r}
+
+# Compare financial characteristics by payment difficulty outcome
+financial_by_target <- application_train %>%
+  group_by(target) %>%
+  summarise(
+    applicants = n(),
+    mean_income = mean(amt_income_total),
+    median_income = median(amt_income_total),
+    mean_credit = mean(amt_credit),
+    median_credit = median(amt_credit),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    outcome = if_else(
+      target == 1,
+      "Payment difficulties",
+      "No payment difficulties"
+    )
+  )
+
+financial_by_target
+```
+
+
+The descriptive analysis of applicant income and requested credit amounts reveals substantial variation in the financial profiles of Home Credit applicants. Both variables have means greater than their medians, suggesting right-skewed distributions influenced by applicants with relatively high incomes and requested credit amounts.
+
+The median annual income is $147,150, while the median requested credit amount is $513,531. The 99th percentiles are considerably higher, at approximately $472,000 for income and $1,850,000 for requested credit.
+
+Initial data integrity checks identified no missing, zero, or negative values in either variable. However, additional investigation of extreme observations is warranted.
+
+Comparisons by repayment outcome reveal that applicants experiencing payment difficulties have lower median incomes ($135,000 versus $148,500) and lower median requested credit amounts ($497,520 versus $517,788) than applicants without payment difficulties.
+
+These differences suggest that repayment difficulty cannot be understood simply by examining the size of the requested loan. Applicant income and other measures of financial capacity and creditworthiness should be considered together when evaluating lending risk.
+
+```{r}
+print(financial_summary, width = Inf)
+```
+
+## Investigation of Extreme Financial Values
+
+The initial descriptive statistics reveal substantial differences between the upper percentiles and maximum values of applicant income and requested credit amounts.
+
+For example, the 99th percentile of applicant income is 472,500, while the maximum recorded value is 117,000,000. This substantial difference suggests the presence of extreme observations that may influence statistical summaries and visualizations.
+
+Further investigation is necessary to determine the frequency of these values, their relationship with payment difficulty, and whether they represent legitimate observations or potential data quality issues.
+
+```{r}
+# Identify applicants with the highest recorded incomes
+top_income_applicants <- application_train %>%
+  arrange(desc(amt_income_total)) %>%
+  select(
+    sk_id_curr,
+    target,
+    amt_income_total,
+    amt_credit
+  ) %>%
+  slice_head(n = 10)
+
+top_income_applicants
+```
+```{r}
+
+# Calculate the 99th percentile income threshold
+income_99th_percentile <- quantile(
+  application_train$amt_income_total,
+  0.99
+)
+
+# Count applicants above the 99th percentile
+income_outlier_summary <- application_train %>%
+  summarise(
+    threshold = income_99th_percentile,
+    applicants_above_threshold = sum(
+      amt_income_total > income_99th_percentile
+    ),
+    percentage_above_threshold = mean(
+      amt_income_total > income_99th_percentile
+    ) * 100
+  )
+
+income_outlier_summary
+```
+```{r}
+
+# Compare payment difficulty rates above and below the 99th percentile
+income_risk_comparison <- application_train %>%
+  mutate(
+    income_category = if_else(
+      amt_income_total > income_99th_percentile,
+      "Above 99th percentile",
+      "At or below 99th percentile"
+    )
+  ) %>%
+  group_by(income_category) %>%
+  summarise(
+    applicants = n(),
+    mean_income = mean(amt_income_total),
+    median_income = median(amt_income_total),
+    difficulty_rate = mean(target) * 100,
+    .groups = "drop"
+  )
+
+income_risk_comparison
+```
+
+
+The investigation of extreme income observations identified substantial differences between the upper percentiles and maximum recorded values. The 99th percentile of annual income is 472,500, while the maximum recorded income is 117,000,000. The ten highest-income observations also include several values substantially above the typical applicant income.
+
+A total of 3,014 applicants (0.98%) have recorded incomes above the 99th percentile threshold. These observations represent an extreme upper tail of the income distribution and warrant further investigation. However, the available analysis does not establish whether these values are legitimate high-income observations or data quality issues.
+
+A comparison of repayment outcomes reveals that applicants above the 99th percentile income threshold have a payment difficulty rate of 5.37%, compared with 8.10% among applicants at or below the threshold. The higher-income group therefore exhibits a payment difficulty rate approximately 2.73 percentage points lower.
+
+This relationship suggests that applicant income may provide useful information about repayment capacity. However, income alone does not establish creditworthiness, and the observed association does not demonstrate causation.
+
+Extreme income observations should be investigated before determining whether transformations or other data preparation strategies are appropriate.
+
+
+## Income Distribution and Extreme Observations
+
+The distribution of applicant income will be examined to understand its degree of skewness and the influence of extreme observations. Both the full income distribution and a more focused view of typical applicant incomes will be visualized.
+
+```{r}
+# Visualize the full applicant income distribution
+ggplot(
+  application_train,
+  aes(x = amt_income_total)
+) +
+  geom_histogram(
+    bins = 60,
+    fill = "#5478C7",
+    color = "white"
+  ) +
+  scale_x_continuous(
+    labels = label_comma()
+  ) +
+  labs(
+    title = "Distribution of Applicant Income",
+    subtitle = "Full training dataset, including extreme observations",
+    x = "Annual applicant income",
+    y = "Number of applicants"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# Visualize the income distribution below the 99th percentile
+ggplot(
+  application_train %>%
+    filter(amt_income_total <= income_99th_percentile),
+  aes(x = amt_income_total)
+) +
+  geom_histogram(
+    bins = 60,
+    fill = "#5478C7",
+    color = "white"
+  ) +
+  scale_x_continuous(
+    labels = label_comma()
+  ) +
+  labs(
+    title = "Applicant Income Distribution Below the 99th Percentile",
+    subtitle = "Focused view of the central 99% of applicants",
+    x = "Annual applicant income",
+    y = "Number of applicants"
+  ) +
+  theme_minimal()
+```
+
+The full income distribution demonstrates the influence of extreme observations on the overall scale of the data. The maximum recorded income of 117,000,000 compresses the majority of applicant observations into a relatively small portion of the histogram, making the typical distribution difficult to interpret.
+
+Restricting the visualization to applicants at or below the 99th percentile provides a clearer view of the central income distribution. The resulting histogram reveals a right-skewed distribution with noticeable concentrations around recurring income values. This clustering may reflect rounding or common reporting intervals, although the underlying reason cannot be established from the available data.
+
+These findings reinforce the importance of examining distributions alongside summary statistics. The extreme observations should be investigated before determining whether any transformations or adjustments are appropriate for predictive modeling.
+
+
+## Requested Credit Amount Distribution
+
+Requested credit amounts provide another perspective on applicant financial characteristics. This section examines the distribution of requested loans, identifies unusually large credit amounts, and compares borrowing patterns between applicants who experience payment difficulties and those who do not.
+```{r}
+
+# Visualize the distribution of requested credit amounts
+ggplot(
+  application_train,
+  aes(x = amt_credit)
+) +
+  geom_histogram(
+    bins = 60,
+    fill = "#5478C7",
+    color = "white"
+  ) +
+  scale_x_continuous(
+    labels = label_comma()
+  ) +
+  labs(
+    title = "Distribution of Requested Credit Amounts",
+    subtitle = "Home Credit training dataset",
+    x = "Requested credit amount",
+    y = "Number of applicants"
+  ) +
+  theme_minimal()
+```
+
+
+The distribution of requested credit amounts is right-skewed, with most applicants requesting comparatively smaller loans and fewer applicants requesting substantially larger amounts. The median requested credit amount is 513,531, while the mean is approximately 599,026, suggesting that larger credit requests influence the overall average.
+
+The histogram also reveals noticeable concentrations at recurring credit amounts, suggesting that applicants may select from commonly offered loan amounts. The distribution extends to a maximum of 4,050,000, indicating the presence of extreme observations in the upper tail.
+
+These findings demonstrate considerable variation in requested borrowing amounts and support the use of median values and distributional comparisons alongside averages when evaluating applicant financial characteristics.
+
+```{r}
+
+# Compare requested credit amount distributions by repayment outcome
+ggplot(
+  application_train,
+  aes(
+    x = factor(
+      target,
+      levels = c(0, 1),
+      labels = c(
+        "No payment difficulties",
+        "Payment difficulties"
+      )
+    ),
+    y = amt_credit,
+    fill = factor(
+      target,
+      levels = c(0, 1),
+      labels = c(
+        "No payment difficulties",
+        "Payment difficulties"
+      )
+    )
+  )
+) +
+  geom_boxplot(
+    outlier.alpha = 0.05
+  ) +
+  scale_fill_manual(
+    values = c(
+      "No payment difficulties" = "#5478C7",
+      "Payment difficulties" = "#D18B55"
+    )
+  ) +
+  scale_y_continuous(
+    labels = scales::label_comma()
+  ) +
+  labs(
+    title = "Requested Credit Amounts by Payment Difficulty Outcome",
+    subtitle = "Comparing borrowing amounts across repayment outcomes",
+    x = "Loan repayment outcome",
+    y = "Requested credit amount",
+    fill = "Repayment outcome"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 15, hjust = 1)
+  )
+```
+
+```{r}
+
+# Compare requested credit amounts by repayment outcome
+credit_by_target <- application_train %>%
+  group_by(target) %>%
+  summarise(
+    applicants = n(),
+    mean_credit = mean(amt_credit),
+    median_credit = median(amt_credit),
+    p25 = quantile(amt_credit, 0.25),
+    p75 = quantile(amt_credit, 0.75),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    outcome = if_else(
+      target == 1,
+      "Payment difficulties",
+      "No payment difficulties"
+    )
+  )
+
+credit_by_target
+```
+
+
+Comparisons of requested credit amounts across repayment outcomes reveal relatively similar distributions between applicants who experience payment difficulties and those who do not.
+
+Applicants without payment difficulties have a median requested credit amount of 517,788, compared with 497,520 among applicants experiencing payment difficulties. Although the median is slightly higher among applicants without payment difficulties, the boxplots show substantial overlap between the two groups.
+
+Both populations also contain extreme observations involving substantially larger credit requests.
+
+These findings suggest that requested credit amount alone may have limited ability to distinguish applicants by repayment outcome. The relationship between borrowing amounts and other financial characteristics, particularly applicant income, may provide additional insight into repayment capacity.
+
+
+## Applicant Age
+
+Applicant age may provide additional context when evaluating repayment outcomes. This section examines the age distribution of applicants and compares age characteristics across repayment outcomes. The analysis also considers whether the age variable contains unusual or potentially problematic values.
+```{r}
+
+# Convert applicant age from negative days into years
+application_train <- application_train %>%
+  mutate(
+    age_years = -days_birth / 365.25
+  )
+
+# Summarize applicant age
+age_summary <- application_train %>%
+  summarise(
+    mean_age = mean(age_years),
+    median_age = median(age_years),
+    minimum_age = min(age_years),
+    maximum_age = max(age_years),
+    sd_age = sd(age_years)
+  )
+
+age_summary
+
+```
+```{r}
+
+# Compare applicant age by payment difficulty outcome
+age_by_target <- application_train %>%
+  group_by(target) %>%
+  summarise(
+    applicants = n(),
+    mean_age = mean(age_years),
+    median_age = median(age_years),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    outcome = if_else(
+      target == 1,
+      "Payment difficulties",
+      "No payment difficulties"
+    )
+  )
+
+age_by_target
+```
+```{r}
+
+# Compare applicant age distributions by repayment outcome
+ggplot(
+  application_train,
+  aes(
+    x = factor(
+      target,
+      levels = c(0, 1),
+      labels = c(
+        "No payment difficulties",
+        "Payment difficulties"
+      )
+    ),
+    y = age_years,
+    fill = factor(
+      target,
+      levels = c(0, 1),
+      labels = c(
+        "No payment difficulties",
+        "Payment difficulties"
+      )
+    )
+  )
+) +
+  geom_boxplot(outlier.alpha = 0.1) +
+  scale_fill_manual(
+    values = c(
+      "No payment difficulties" = "#5478C7",
+      "Payment difficulties" = "#D18B55"
+    )
+  ) +
+  labs(
+    title = "Applicant Age by Payment Difficulty Outcome",
+    subtitle = "Comparing applicant age across repayment outcomes",
+    x = "Loan repayment outcome",
+    y = "Applicant age (years)",
+    fill = "Repayment outcome"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 15, hjust = 1)
+  )
+```
+
+
+The applicant **age analysis reveals differences in age distributions across repayment outcomes.** The overall median applicant age is 43.1 years, with ages ranging from approximately 20.5 to 69.1 years.
+
+Applicants experiencing payment difficulties have a median age of 39.1 years, compared with 43.5 years among applicants without payment difficulties. Mean ages show a similar pattern, at 40.8 and 44.2 years, respectively.
+
+The boxplot illustrates a shift toward younger ages among applicants experiencing payment difficulties, although considerable overlap exists between the two distributions.
+
+These findings suggest that applicant age may provide useful information when evaluating repayment risk. However, age should be considered alongside financial characteristics and credit information rather than treated as an independent measure of creditworthiness.
+
+
+# Data Integrity Findings and Preparation Decisions
+
+## Summary of Data Quality Findings
+
+The exploratory analysis identified several data quality considerations that may affect subsequent analysis and predictive modeling. The following table summarizes the primary findings, their implications, and proposed preparation decisions.
+
+
+| Data issue | Evidence from EDA | Proposed decision |
+|:---|:---|:---|
+| Missing applicant information | 67 of 122 training variables contain missing values | Investigate missingness by variable and preserve potentially informative missingness patterns |
+| Missing external credit scores | EXT_SOURCE_1: 56.4% missing; EXT_SOURCE_3: 19.8% missing | Preserve missingness indicators and investigate appropriate imputation methods |
+| Missing occupation information | 31.3% missing; missing group has a 6.51% difficulty rate | Retain missingness as a separate category for further investigation |
+| Special employment value | DAYS_EMPLOYED contains 55,374 instances of 365243 (18%) | Treat as a special coded value, create an indicator, and exclude from calculations of actual employment duration |
+| Extreme income observations | Maximum income of 117 million versus 99th percentile of 472,500 | Investigate extreme values; retain initially rather than automatically deleting |
+| Skewed financial distributions | Income and credit amounts have means substantially above medians | Consider transformations or robust statistical methods during modeling |
+| Missing income or credit values | No missing, zero, or negative values identified | Retain these variables without missing-value treatment at this stage |
+| Duplicate application identifiers | No duplicate identifiers found in training or test datasets | Retain application identifiers for record tracking; exclude from predictive features |
+
+
+## Interpretation of Findings and Preparation Decisions
+
+The most significant data quality considerations involve missing applicant information and unusual coded values. Missingness is not distributed evenly across variables, and comparisons with the repayment outcome suggest that information availability may itself be associated with payment difficulty. Therefore, missing values should not automatically be treated as meaningless or removed without further investigation.
+
+The `DAYS_EMPLOYED` variable requires special attention because the value 365243 appears to represent a placeholder rather than a realistic employment duration. These observations should be distinguished from actual employment values before calculating employment-related statistics or developing predictive features.
+
+Applicant income and requested credit amounts also contain highly skewed distributions and extreme observations. Although these values may influence statistical summaries, the analysis has not established that they are errors. They should be retained initially and investigated further before considering transformations or other treatments.
+
+Overall, the proposed preparation approach will prioritize preserving useful applicant information, identifying special coded values, and evaluating missingness and extreme observations before developing predictive models.
+
+## Important considerations for modeling
+
+The findings from this investigation will inform subsequent data preparation and modeling decisions. Potential strategies include creating missingness indicators, appropriately handling special employment codes, evaluating transformations for highly skewed financial variables, and assessing the treatment of extreme observations.
+
+Because the project focuses on responsible lending and financial inclusion, preparation decisions should also consider whether excluding incomplete observations or relying heavily on particular applicant characteristics could introduce unintended bias. Predictive performance should ultimately be evaluated alongside interpretability and the potential impact on underserved applicants.
+
+```{r}
+
+# Summarize the special employment placeholder
+employment_placeholder_check <- application_train %>%
+  summarise(
+    total_applicants = n(),
+    placeholder_count = sum(days_employed == 365243),
+    placeholder_percentage = mean(days_employed == 365243) * 100,
+    minimum_actual_days = min(
+      days_employed[days_employed != 365243]
+    ),
+    maximum_actual_days = max(
+      days_employed[days_employed != 365243]
+    )
+  )
+
+employment_placeholder_check
+
+print(employment_placeholder_check, width = Inf)
+```
+
+
+The employment placeholder investigation confirmed that 55,374 applicants, representing 18.0% of the training dataset, have a recorded DAYS_EMPLOYED value of 365243. This value does not represent a realistic employment duration and appears to function as a special coded value.
+
+After excluding the placeholder, actual employment values range from -17,912 days to zero. Because employment duration is recorded as negative days, these values represent approximately 49 years of employment at the longest, to employment beginning on the application date.
+
+During data preparation, the placeholder should be distinguished from actual employment durations. A separate indicator variable should preserve whether an applicant has the special value, while the placeholder itself should be excluded from calculations involving actual employment duration.
+
+
+# EDA Results and Conclusion
+
+## Summary of Key Findings
+
+The exploratory data analysis examined applicant characteristics, financial information, external credit scores, repayment outcomes, and data quality across the Home Credit training dataset. Several patterns emerged that may help explain differences in repayment behavior and inform subsequent predictive modeling.
+
+The following findings summarize the most relevant relationships and data characteristics identified during the analysis.
+
+**External Credit Scores**
+
+The three external credit score variables demonstrated some of the clearest differences between repayment outcome groups. Applicants experiencing payment difficulties had lower average scores across all three variables compared with applicants who did not experience payment difficulties.
+
+For example, the average EXT_SOURCE_1 score was 0.387 among applicants experiencing payment difficulties, compared with 0.511 among applicants without payment difficulties. Similar differences were observed for EXT_SOURCE_2 and EXT_SOURCE_3.
+
+These findings suggest that external credit scores may be valuable predictors of repayment risk and warrant particular attention during model development.
+
+**Applicant Age**
+
+Applicant age also demonstrated a noticeable relationship with repayment outcomes. Applicants experiencing payment difficulties had a median age of 39.1 years, compared with 43.5 years among applicants without payment difficulties.
+
+Although the age distributions overlap, the difference suggests that younger applicants may represent a population with relatively higher repayment risk within this dataset. Age may therefore provide useful predictive information when evaluated alongside other applicant characteristics.
+
+**Applicant Financial Characteristics**
+
+Income and requested credit amounts showed more modest differences across repayment outcome groups. Applicants experiencing payment difficulties had somewhat lower median annual income and median requested credit amounts than applicants without payment difficulties.
+
+However, the distributions overlapped considerably, suggesting that neither income nor requested borrowing amount alone provides a clear distinction between applicants who experience payment difficulties and those who do not.
+
+Both financial variables also demonstrated right-skewed distributions and extreme observations, reinforcing the importance of investigating outliers and considering appropriate transformations during data preparation.
+
+**Information Availability and Missingness**
+
+Missing information was prevalent throughout the application dataset, with 67 of 122 training variables containing at least some missing observations. Comparisons of repayment difficulty rates across missingness groups revealed that information availability may itself be associated with repayment outcomes.
+
+For example, applicants with missing EXT_SOURCE_3 scores had a payment difficulty rate of 9.31%, compared with 7.77% among applicants with observed scores. Missing occupation information showed a different pattern, with a 6.51% difficulty rate compared with 8.79% among applicants with observed occupation information.
+
+These differences suggest that missingness patterns may contain useful information. Missing values should therefore be investigated individually rather than automatically removed or treated identically across variables.
+
+**Overall Repayment Outcomes**
+
+The training dataset contains 307,511 applicants, of whom 24,825 (approximately 8.07%) experienced payment difficulties. The remaining 282,686 applicants did not experience payment difficulties.
+
+This represents a substantial class imbalance, with applicants experiencing payment difficulties making up a relatively small portion of the dataset. This imbalance will be an important consideration during predictive modeling because a model that primarily predicts successful repayment could achieve high overall accuracy while performing poorly at identifying applicants who experience payment difficulties.
+
+### Implications for Data Preparation and Modeling
+
+The findings from EDA provide direction for the subsequent data preparation and modeling phases.
+
+External credit scores appear to offer promising predictive information, while applicant age may provide additional insight into differences in repayment behavior. Income and requested credit amounts should also be retained for further investigation, although their relationships with repayment outcomes appear less pronounced in the descriptive analysis.
+
+Several data preparation considerations were identified:
+
+- Missing values should be evaluated by variable, with missingness indicators considered where appropriate.
+- The special DAYS_EMPLOYED value of 365243 should be separated from actual employment durations.
+- Extreme income and credit observations should be investigated before determining whether transformations or other treatments are appropriate.
+- Highly skewed financial variables may benefit from transformations or modeling approaches that are less sensitive to extreme values.
+- The relatively small proportion of applicants experiencing payment difficulties should be considered when selecting evaluation metrics and developing predictive models.
+
+These findings support a modeling approach that considers multiple applicant characteristics rather than relying on any single variable to determine repayment risk.
+
+### Limitations of the Analysis
+
+Several limitations should be considered when interpreting these findings.
+
+First, the analysis is based on historical application and repayment data. Observed relationships do not establish causation, and historical patterns may not fully represent future applicant behavior.
+
+Second, the analysis is limited to the variables available in the application training dataset. Supplementary information, including previous applications, credit bureau records, and installment payment histories, was not incorporated into this phase of the project.
+
+Third, the dataset contains approved loan applicants with observed repayment outcomes. Consequently, the analysis cannot directly establish how many applicants who were previously rejected would have successfully repaid a loan. This limits the ability to evaluate the proposed objective of increasing approvals among creditworthy applicants using this dataset alone.
+
+Finally, missing information, extreme observations, and the imbalance between repayment outcome groups may influence subsequent model performance. These limitations should be considered during data preparation, model evaluation, and the development of business recommendations.
+
+
+## Conclusion
+
+The exploratory data analysis identified several applicant characteristics and data patterns that may help Home Credit better understand repayment risk. External credit scores demonstrated the clearest differences between applicants experiencing payment difficulties and those who did not. Applicant age also showed a meaningful relationship with repayment outcomes, while income and requested credit amounts provided additional context regarding applicant financial characteristics.
+
+The analysis also identified several data quality considerations that will influence subsequent preparation decisions, particularly missing applicant information, special employment codes, and extreme financial observations. Addressing these issues will be important to developing reliable and interpretable predictive models.
+
+Overall, the findings support the original business problem statement and reinforce the potential value of combining alternative applicant information with traditional financial indicators to improve credit risk assessment.
+
+The proposed objectives of reducing payment difficulties among approved borrowers by 5% and increasing approvals among creditworthy applicants by 5% remain appropriate business goals for further investigation. However, achieving these improvements has not yet been established and will require predictive modeling, evaluation against appropriate baselines, and consideration of responsible lending practices.
+
+The next phase of the project will focus on preparing the application data, addressing identified data quality issues, and developing predictive models to evaluate how effectively applicant characteristics can distinguish between repayment outcomes. Ultimately, the goal is to translate these findings into actionable recommendations that balance financial performance with responsible access to credit.
+
+### AI Log
+
+I expiremented playing with the Posit Assistant, but so far my preference is having chatGPT open in a separate window and talking through my workflow, as if chat were a helpful assistant I can bounce ideas off of. I used chat to help me troubleshoot when I got stuck, and I use it to help me write my thoughts in a professional and organized manner.I still need to get in to the Codex and expirement with that facet of chat GPT. I will continue to use AI as a resource, and as a grunt worker, but I will not rely on it for my work, understanding, or interpretations. That work is my own. 
