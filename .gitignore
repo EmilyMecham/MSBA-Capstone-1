@@ -1,8 +1,17 @@
 # Raw data
-data/
+data/*.csv
+data/processed/
+
+# R objects and intermediate files
+*.rds
+*.RData
 
 # R and Positron temporary files
 .Rproj.user/
 .Rhistory
 .RData
+
+# Quarto temporary files
 .quarto/
+*_cache/
+*_files/
