@@ -197,3 +197,36 @@ The private leaderboard score was used as the final competition evaluation resul
 XGBoost was selected because it achieved the strongest initial cross-validation performance among the three candidate algorithms. Class imbalance experiments supported retaining the original target distribution, and randomized hyperparameter tuning provided an efficient method for selecting the final configuration.
 
 The project demonstrated an end-to-end predictive modeling workflow, including data preparation, feature engineering, model comparison, class imbalance evaluation, hyperparameter tuning, model validation, and Kaggle submission.
+
+### Business Value
+
+Predicting loan repayment difficulties can help lenders make more informed risk-management decisions. A model that estimates applicant-level repayment risk could support application review prioritization, help identify applicants who may benefit from additional evaluation, and provide insight into patterns associated with repayment challenges.
+
+The final XGBoost model achieved a private Kaggle ROC AUC score of 0.75231, demonstrating its ability to distinguish between applicants with different levels of repayment risk. While the model is not intended to replace lending decisions, it illustrates how predictive analytics can support more informed and data-driven risk assessment.
+
+### Challenges and Lessons Learned
+
+Several challenges emerged throughout the project:
+
+- **Missing data:** A substantial portion of the dataset contained missing values. Developing a consistent preprocessing approach required identifying missingness patterns, selecting appropriate imputation strategies, and creating missingness indicators.
+- **Data quality:** The `DAYS_EMPLOYED` variable contained an unusual sentinel value representing 365,243 days. This required additional feature engineering to distinguish the placeholder from meaningful employment information.
+- **Class imbalance:** Only approximately 8% of applicants experienced payment difficulties. Experiments with downsampling and SMOTE demonstrated that balancing the target classes did not necessarily improve model performance.
+- **Preprocessing leakage:** Cross-validation initially highlighted the importance of fitting preprocessing parameters exclusively on training folds. Revising the workflow to use fold-specific preprocessing helped prevent information from leaking between training and validation data.
+- **Model evaluation:** Accuracy alone was misleading because of the imbalanced target. Comparing ROC AUC, sensitivity, specificity, and precision provided a more complete understanding of model performance.
+- **Reproducibility:** Developing the Quarto notebooks as self-contained documents reinforced the importance of explicitly loading dependencies, data, and reusable functions rather than relying on objects from an interactive R session.
+
+The project reinforced that successful predictive modeling involves more than selecting an algorithm. Data quality, preprocessing, validation strategy, class distribution, and evaluation metrics all influence the reliability and usefulness of the final model.
+
+### Key Takeaways
+
+This project strengthened my ability to develop an end-to-end analytics workflow using R, including data cleaning, feature engineering, exploratory analysis, predictive modeling, cross-validation, hyperparameter tuning, and model evaluation.
+
+Some of the most important lessons were:
+
+- More complex models do not automatically outperform simpler alternatives.
+- Techniques intended to address class imbalance can reduce predictive performance.
+- Proper cross-validation requires preprocessing to be fitted within each training fold.
+- A model's ranking performance and its ability to make useful classification decisions are different considerations.
+- Technical results become more valuable when translated into practical business implications.
+
+Overall, the project demonstrated how data science techniques can be applied to a real-world financial risk problem while emphasizing the importance of reproducibility, thoughtful evaluation, and clear communication.
