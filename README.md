@@ -125,3 +125,75 @@ Original datasets, processed data files, and intermediate R objects are excluded
 - Git and GitHub
 - tidyverse
 - ggplot2
+
+## Modeling
+
+The modeling phase builds on the prepared training and test datasets to predict the likelihood of loan repayment difficulties. The analysis is documented in `notebooks/modeling.qmd`.
+
+### Models Evaluated
+
+Three classification algorithms were compared using stratified three-fold cross-validation:
+
+| Model | Mean ROC AUC |
+|---|---:|
+| XGBoost | 0.765 |
+| Logistic Regression | 0.749 |
+| Random Forest | 0.725 |
+
+XGBoost achieved the highest initial ROC AUC and was selected for further experimentation.
+
+### Class Imbalance Experiments
+
+Because approximately 8% of applicants in the training dataset experienced payment difficulties, three approaches to class imbalance were evaluated:
+
+| Strategy | Mean ROC AUC |
+|---|---:|
+| Original class distribution | 0.738 |
+| Downsampling | 0.714 |
+| SMOTE | 0.675 |
+
+Retaining the original class distribution produced the strongest results. Neither downsampling nor SMOTE improved model performance.
+
+### Hyperparameter Tuning
+
+A randomized search evaluated 20 XGBoost configurations using three-fold cross-validation on a 10% sample of the training data. The selected configuration achieved a mean ROC AUC of 0.747.
+
+The final configuration used:
+- 300 trees
+- Tree depth of 7
+- Learning rate of 0.014
+- Minimum node size of 24
+- Loss reduction of 0.304
+- Observation sampling proportion of 0.630
+- Predictor sampling proportion of 0.689
+
+### Final Model and Evaluation
+
+The selected XGBoost configuration was trained on the full training dataset. Evaluation on an 80/20 stratified split produced the following results:
+
+| Metric | Result |
+|---|---:|
+| ROC AUC | 0.761 |
+| Accuracy | 91.8% |
+| Sensitivity (Recall) | 0.71% |
+| Specificity | 99.9% |
+| Precision | 52.2% |
+
+Classification threshold analysis demonstrated that lowering the default threshold from 0.50 to 0.10 increased sensitivity to 60.9%, with specificity of 77.7%. This highlighted the tradeoff between identifying more potentially high-risk applicants and increasing false-positive classifications.
+
+### Kaggle Submission
+
+The final model generated predicted probabilities for the competition test dataset and achieved the following Kaggle scores:
+
+| Evaluation | ROC AUC |
+|---|---:|
+| Public leaderboard | 0.75575 |
+| Private leaderboard | 0.75231 |
+
+The private leaderboard score was used as the final competition evaluation result.
+
+### Model Selection Rationale
+
+XGBoost was selected because it achieved the strongest initial cross-validation performance among the three candidate algorithms. Class imbalance experiments supported retaining the original target distribution, and randomized hyperparameter tuning provided an efficient method for selecting the final configuration.
+
+The project demonstrated an end-to-end predictive modeling workflow, including data preparation, feature engineering, model comparison, class imbalance evaluation, hyperparameter tuning, model validation, and Kaggle submission.

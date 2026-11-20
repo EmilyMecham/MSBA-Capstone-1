@@ -15,3 +15,9 @@ data/processed/
 .quarto/
 *_cache/
 *_files/
+
+# Kaggle submission files
+submission.csv
+
+# Rendered Quarto documents
+notebooks/*.html

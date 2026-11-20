@@ -1,0 +1,1140 @@
+
+---
+title: "Home Credit Default Risk: Modeling"
+author: "Emily Mecham"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+# 1. Introduction
+
+## Business Problem
+
+Home Credit seeks to improve lending decisions by identifying applicants who are likely to experience payment difficulties while maintaining responsible access to credit.
+
+This modeling project builds upon the exploratory data analysis and data preparation completed in earlier project phases. The objective is to develop and evaluate predictive models that distinguish between applicants who experience payment difficulties and those who successfully repay their loans.
+
+## Modeling Objectives
+
+The analysis will:
+
+- Establish a baseline classification benchmark.
+- Compare logistic regression, random forest, and gradient boosting models.
+- Evaluate model performance using stratified cross-validation and AUC.
+- Investigate strategies for addressing class imbalance.
+- Tune the strongest candidate model.
+- Generate predicted repayment probabilities for the Kaggle test dataset.
+
+# 2. Load Packages and Prepared Data
+```{r}
+
+# Load required packages
+library(tidyverse)
+library(tidymodels)
+library(ranger)
+library(xgboost)
+library(themis)
+library(pROC)
+library(glmnet)
+
+# Load prepared training and test datasets
+modeling_train <- readRDS(
+  "data/processed/prepared_train.rds"
+)
+
+modeling_test <- readRDS(
+  "data/processed/prepared_test.rds"
+)
+
+# Convert TARGET into a factor for classification
+modeling_train <- modeling_train %>%
+  mutate(
+    target = factor(
+      target,
+      levels = c(0, 1),
+      labels = c(
+        "No payment difficulties",
+        "Payment difficulties"
+      )
+    )
+  )
+
+# Confirm data loaded successfully
+cat("Training observations:", nrow(modeling_train), "\n")
+cat("Test observations:", nrow(modeling_test), "\n")
+cat("Training predictors:", ncol(modeling_train) - 1, "\n")
+```
+
+# 3. Establish the Baseline
+
+## Examine the target distribution
+
+The target variable is imbalanced, with substantially more applicants who successfully repay their loans than applicants who experience payment difficulties. Understanding this imbalance is important when evaluating model performance, since a classifier can achieve high accuracy simply by predicting the majority class.
+
+```{r}
+# Calculate the distribution of repayment outcomes
+target_distribution <- modeling_train %>%
+  count(target) %>%
+  mutate(
+    percentage = round(n / sum(n) * 100, 2)
+  )
+
+target_distribution
+```
+
+## Build the majority-class benchmark
+
+The majority-class classifier serves as a simple baseline. It predicts that every applicant will experience no payment difficulties, regardless of individual characteristics.
+
+This benchmark establishes the minimum level of performance that more sophisticated models should improve upon.
+
+```{r}
+
+# Identify the majority class
+majority_class <- names(
+  which.max(table(modeling_train$target))
+)
+
+# Generate majority-class predictions
+baseline_predictions <- tibble(
+  truth = modeling_train$target,
+  prediction = factor(
+    rep(majority_class, nrow(modeling_train)),
+    levels = levels(modeling_train$target)
+  ),
+  default_probability = 0
+)
+
+# Calculate baseline accuracy
+baseline_accuracy <- accuracy_vec(
+  truth = baseline_predictions$truth,
+  estimate = baseline_predictions$prediction
+)
+
+# Calculate baseline AUC
+baseline_auc <- roc_auc_vec(
+  truth = baseline_predictions$truth,
+  estimate = baseline_predictions$default_probability,
+  event_level = "second"
+)
+
+# Summarize benchmark performance
+baseline_results <- tibble(
+  model = "Majority Class Classifier",
+  accuracy = baseline_accuracy,
+  auc = baseline_auc
+)
+
+baseline_results
+
+```
+
+The majority-class classifier achieves high accuracy because most applicants do not experience payment difficulties. However, its AUC of 0.50 indicates that it cannot distinguish between applicants with different repayment outcomes.
+
+Subsequent models must demonstrate meaningful improvement in AUC to provide analytical value.
+
+
+# 4. Cross-Validation Strategy
+
+## Establish stratified 3-fold cross-validation
+
+To evaluate candidate models consistently, this project uses stratified 3-fold cross-validation. The training dataset is divided into three approximately equal folds, with each fold maintaining a similar proportion of applicants experiencing payment difficulties.
+
+Each model will be trained on two folds and evaluated on the remaining fold, rotating through all three folds. Performance will be summarized using the mean ROC AUC across folds.
+
+Stratification is particularly important because the target variable is highly imbalanced, with approximately 8% of applicants experiencing payment difficulties.
+
+A fixed random seed ensures that the same folds are used across candidate models, supporting reproducibility and fair model comparisons.
+
+## Create cross-validation folds
+```{r}
+
+# Set seed for reproducibility
+set.seed(2026)
+
+# Confirm target distribution
+target_distribution <- modeling_train %>%
+  count(target) %>%
+  mutate(
+    percentage = round(n / sum(n) * 100, 2)
+  )
+
+target_distribution
+
+# Create stratified 3-fold cross-validation
+cv_folds <- vfold_cv(
+  modeling_train,
+  v = 3,
+  strata = target
+)
+
+# Confirm fold creation
+cv_folds
+
+# Check number of folds
+length(cv_folds$splits)
+
+```
+
+## Validate fold distribution
+```{r}
+
+# Examine target distribution across assessment folds
+fold_distribution <- map_dfr(
+  seq_along(cv_folds$splits),
+  function(i) {
+    assessment_data <- assessment(cv_folds$splits[[i]])
+
+    assessment_data %>%
+      count(target) %>%
+      mutate(
+        fold = i,
+        percentage = round(n / sum(n) * 100, 2)
+      )
+  }
+)
+
+fold_distribution
+```
+
+**Cross-validation validation results**
+
+The stratified 3-fold cross-validation procedure successfully created three approximately equal validation folds. The proportion of applicants experiencing payment difficulties remained consistent across folds, ranging from 8.02% to 8.13%.
+
+This confirms that stratification preserved the original target distribution and provides a consistent foundation for comparing candidate models.
+
+A fixed random seed ensures reproducibility across model evaluations.
+
+# 5. Candidate Model Comparison
+
+## Protect against preprocessing leakage
+
+To prevent information leakage from the training data into the validation folds, preprocessing steps are applied within each fold. This ensures that the model is evaluated on unseen data, providing a more accurate assessment of its generalization performance.
+
+### Build fold-specific preprocessing 
+
+```{r}
+
+# Prepare raw training data with a consistent target factor
+modeling_raw <- application_train %>%
+  mutate(
+    target = factor(
+      target,
+      levels = c(0, 1),
+      labels = c(
+        "No payment difficulties",
+        "Payment difficulties"
+      )
+    )
+  )
+
+# Recreate stratified folds using RAW data
+# This prevents globally fitted preprocessing from leaking
+set.seed(2026)
+
+cv_folds <- vfold_cv(
+  modeling_raw,
+  v = 3,
+  strata = target
+)
+
+# Function to prepare one cross-validation fold
+prepare_model_fold <- function(split) {
+
+  # Separate analysis and assessment observations
+  analysis_raw <- analysis(split)
+  assessment_raw <- assessment(split)
+
+  # Fit preprocessing using analysis data ONLY
+  fold_parameters <- fit_preprocessor(analysis_raw)
+
+  # Apply identical parameters to both datasets
+  analysis_prepared <- apply_preprocessor(
+    analysis_raw,
+    fold_parameters
+  )
+
+  assessment_prepared <- apply_preprocessor(
+    assessment_raw,
+    fold_parameters
+  )
+
+  # Remove application ID from model predictors
+  analysis_prepared <- analysis_prepared %>%
+    select(-sk_id_curr)
+
+  assessment_prepared <- assessment_prepared %>%
+    select(-sk_id_curr)
+
+  # Return prepared datasets
+  list(
+    analysis = analysis_prepared,
+    assessment = assessment_prepared
+  )
+}
+
+# Prepare all three folds
+prepared_cv_data <- map(
+  cv_folds$splits,
+  prepare_model_fold
+)
+
+# Verify fold preparation
+map_dfr(
+  seq_along(prepared_cv_data),
+  function(i) {
+    tibble(
+      fold = i,
+      analysis_rows = nrow(prepared_cv_data[[i]]$analysis),
+      assessment_rows = nrow(prepared_cv_data[[i]]$assessment),
+      analysis_predictors = ncol(prepared_cv_data[[i]]$analysis) - 1,
+      assessment_predictors = ncol(prepared_cv_data[[i]]$assessment) - 1
+    )
+  }
+)
+```
+
+## Model Specifications and Cross-Validation
+```{r}
+
+# Define candidate models
+
+logistic_spec <- logistic_reg(
+  penalty = 0.01,
+  mixture = 0
+) %>%
+  set_engine("glmnet") %>%
+  set_mode("classification")
+
+rf_spec <- rand_forest(
+  trees = 200,
+  mtry = 20,
+  min_n = 10
+) %>%
+  set_engine(
+    "ranger",
+    probability = TRUE,
+    num.threads = 4
+  ) %>%
+  set_mode("classification")
+
+
+xgb_spec <- boost_tree(
+  trees = 300,
+  tree_depth = 6,
+  learn_rate = 0.05,
+  min_n = 10,
+  sample_size = 0.8,
+  mtry = 0.8
+) %>%
+  set_engine(
+    "xgboost",
+    eval_metric = "auc",
+    nthread = 4,
+    counts = FALSE
+  ) %>%
+  set_mode("classification")
+
+candidate_models <- list(
+  Logistic_Regression = logistic_spec,
+  Random_Forest = rf_spec,
+  XGBoost = xgb_spec
+)
+
+# Function to fit and evaluate one model on one fold
+evaluate_model <- function(model_spec, fold_data, fold_number) {
+
+  # Create preprocessing recipe using the analysis data
+  model_recipe <- recipe(
+    target ~ .,
+    data = fold_data$analysis
+  ) %>%
+    step_unknown(all_nominal_predictors()) %>%
+    step_novel(all_nominal_predictors()) %>%
+    step_dummy(all_nominal_predictors()) %>%
+    step_zv(all_predictors())
+
+  # Build and fit workflow
+  model_workflow <- workflow() %>%
+    add_recipe(model_recipe) %>%
+    add_model(model_spec)
+
+  fitted_model <- fit(
+    model_workflow,
+    data = fold_data$analysis
+  )
+
+  # Generate predicted probabilities
+  predictions <- predict(
+    fitted_model,
+    new_data = fold_data$assessment,
+    type = "prob"
+  )
+
+  # Calculate ROC AUC
+  auc <- roc_auc_vec(
+    truth = fold_data$assessment$target,
+    estimate = predictions[[".pred_Payment difficulties"]],
+    event_level = "second"
+  )
+
+  tibble(
+    fold = fold_number,
+    auc = auc
+  )
+}
+
+# Run all three models across all three folds
+set.seed(2026)
+
+model_results <- imap_dfr(
+  candidate_models,
+  function(model_spec, model_name) {
+
+    message("Evaluating: ", model_name)
+
+    map_dfr(
+      seq_along(prepared_cv_data),
+      function(i) {
+        evaluate_model(
+          model_spec,
+          prepared_cv_data[[i]],
+          i
+        )
+      }
+    ) %>%
+      mutate(model = model_name)
+  }
+)
+
+# Summarize cross-validation performance
+model_comparison <- model_results %>%
+  group_by(model) %>%
+  summarise(
+    mean_auc = mean(auc),
+    sd_auc = sd(auc),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(mean_auc))
+
+model_comparison
+```
+
+### Candidate Model Comparison Results
+
+Three classification algorithms were evaluated using three-fold stratified cross-validation: logistic regression, random forest, and XGBoost. Model performance was compared using the area under the receiver operating characteristic curve (ROC AUC).
+
+XGBoost achieved the highest mean ROC AUC of **0.765**, followed by logistic regression at **0.749** and random forest at **0.725**. XGBoost demonstrated a 0.016 improvement over logistic regression and a 0.040 improvement over random forest.
+
+The standard deviations across the three validation folds were low for all models, indicating relatively consistent performance across validation samples. Based on these results, XGBoost was selected as the leading candidate for further experimentation and hyperparameter tuning.
+
+# 6. Class Imbalance Experiments
+
+## Prepare Sample for Class Imbalance Experiments
+```{r}
+
+# Create a reproducible sample while preserving target proportions
+
+set.seed(2026)
+
+imbalance_sample <- modeling_raw %>%
+  group_by(target) %>%
+  slice_sample(prop = 0.10) %>%
+  ungroup()
+
+# Check sample size and target distribution
+
+imbalance_sample %>%
+  count(target) %>%
+  mutate(
+    proportion = n / sum(n)
+  )
+```
+
+```{r}
+
+# Create stratified 3-fold cross-validation
+
+set.seed(2026)
+
+imbalance_folds <- vfold_cv(
+  imbalance_sample,
+  v = 3,
+  strata = target
+)
+
+# Prepare each fold using training-fold-specific preprocessing
+
+imbalance_cv_data <- map(
+  imbalance_folds$splits,
+  prepare_model_fold
+)
+
+# Verify fold sizes
+
+map_dfr(
+  seq_along(imbalance_cv_data),
+  function(i) {
+    tibble(
+      fold = i,
+      analysis_rows = nrow(imbalance_cv_data[[i]]$analysis),
+      assessment_rows = nrow(imbalance_cv_data[[i]]$assessment)
+    )
+  }
+)
+```
+```{r}
+
+# Define XGBoost model
+
+imbalance_xgb <- boost_tree(
+  trees = 300,
+  tree_depth = 6,
+  learn_rate = 0.05,
+  min_n = 10,
+  sample_size = 0.8,
+  mtry = 0.8
+) %>%
+  set_engine(
+    "xgboost",
+    eval_metric = "auc",
+    nthread = 4,
+    counts = FALSE
+  ) %>%
+  set_mode("classification")
+```
+```{r}
+
+# Evaluate XGBoost with different class imbalance strategies
+
+evaluate_imbalance <- function(fold_data, fold_number, strategy) {
+
+  model_recipe <- recipe(
+    target ~ .,
+    data = fold_data$analysis
+  ) %>%
+    step_unknown(all_nominal_predictors()) %>%
+    step_novel(all_nominal_predictors()) %>%
+    step_dummy(all_nominal_predictors()) %>%
+    step_zv(all_predictors())
+
+  # Apply sampling only to the training data
+  if (strategy == "Downsampling") {
+    model_recipe <- model_recipe %>%
+      step_downsample(target, under_ratio = 1)
+  }
+
+  if (strategy == "SMOTE") {
+    model_recipe <- model_recipe %>%
+      step_smote(target, over_ratio = 0.5)
+  }
+
+  model_workflow <- workflow() %>%
+    add_recipe(model_recipe) %>%
+    add_model(imbalance_xgb)
+
+  fitted_model <- fit(
+    model_workflow,
+    data = fold_data$analysis
+  )
+
+  predictions <- predict(
+    fitted_model,
+    new_data = fold_data$assessment,
+    type = "prob"
+  )
+
+  assessment_data <- fold_data$assessment
+
+  tibble(
+    fold = fold_number,
+    strategy = strategy,
+    auc = roc_auc_vec(
+      truth = assessment_data$target,
+      estimate = predictions[[".pred_Payment difficulties"]],
+      event_level = "second"
+    )
+  )
+}
+
+```
+```{r}
+
+# Compare original data, downsampling, and SMOTE
+
+imbalance_strategies <- c(
+  "Original",
+  "Downsampling",
+  "SMOTE"
+)
+
+imbalance_results <- map_dfr(
+  imbalance_strategies,
+  function(strategy) {
+
+    message("Evaluating: ", strategy)
+
+    map_dfr(
+      seq_along(imbalance_cv_data),
+      function(i) {
+        evaluate_imbalance(
+          imbalance_cv_data[[i]],
+          i,
+          strategy
+        )
+      }
+    )
+  }
+)
+
+# Summarize results
+
+imbalance_comparison <- imbalance_results %>%
+  group_by(strategy) %>%
+  summarise(
+    mean_auc = mean(auc),
+    sd_auc = sd(auc),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(mean_auc))
+
+imbalance_comparison
+```
+
+### Class Imbalance Experiment Results
+
+Three class imbalance strategies were evaluated using XGBoost and three-fold stratified cross-validation: the original class distribution, majority-class downsampling, and SMOTE oversampling.
+
+The original class distribution achieved the highest mean ROC AUC of **0.738**, outperforming downsampling (0.714) and SMOTE (0.675). Both sampling approaches resulted in lower predictive performance, suggesting that retaining the original class distribution provided the model with more useful information for distinguishing between applicants who experience payment difficulties and those who do not.
+
+The original approach also demonstrated the lowest standard deviation across validation folds (0.0111), indicating more consistent performance.
+
+Based on these findings, the original class distribution was retained for subsequent modeling and hyperparameter tuning. Neither downsampling nor SMOTE demonstrated an improvement in ROC AUC in this experiment.
+
+# 7. Hyperparameter Tuning
+
+## Randomized Hyperparameter Search
+
+```{r}
+
+# Generate 20 random XGBoost configurations
+
+set.seed(2026)
+
+tuning_grid <- tibble(
+  config_id = 1:20,
+  trees = sample(seq(200, 600, by = 50), 20, replace = TRUE),
+  tree_depth = sample(3:8, 20, replace = TRUE),
+  learn_rate = 10^runif(20, log10(0.01), log10(0.15)),
+  min_n = sample(5:30, 20, replace = TRUE),
+  loss_reduction = runif(20, 0, 5),
+  sample_size = runif(20, 0.6, 1.0),
+  mtry = runif(20, 0.5, 1.0)
+)
+
+tuning_grid
+```
+```{r}
+
+# Evaluate each configuration using 3-fold cross-validation
+
+tuning_results <- map_dfr(
+  seq_len(nrow(tuning_grid)),
+  function(j) {
+
+    config <- tuning_grid[j, ]
+
+    message(
+      "Evaluating configuration ",
+      j,
+      " of ",
+      nrow(tuning_grid)
+    )
+
+    # Define XGBoost model using current parameters
+    tuning_model <- boost_tree(
+      trees = as.integer(config$trees),
+      tree_depth = as.integer(config$tree_depth),
+      learn_rate = config$learn_rate,
+      min_n = as.integer(config$min_n),
+      loss_reduction = config$loss_reduction,
+      sample_size = config$sample_size,
+      mtry = config$mtry
+    ) %>%
+      set_engine(
+        "xgboost",
+        eval_metric = "auc",
+        nthread = 4,
+        counts = FALSE
+      ) %>%
+      set_mode("classification")
+
+    # Evaluate across all three folds
+    map_dfr(
+      seq_along(imbalance_cv_data),
+      function(i) {
+
+        fold_data <- imbalance_cv_data[[i]]
+
+        tuning_recipe <- recipe(
+          target ~ .,
+          data = fold_data$analysis
+        ) %>%
+          step_unknown(all_nominal_predictors()) %>%
+          step_novel(all_nominal_predictors()) %>%
+          step_dummy(all_nominal_predictors()) %>%
+          step_zv(all_predictors())
+
+        tuning_workflow <- workflow() %>%
+          add_recipe(tuning_recipe) %>%
+          add_model(tuning_model)
+
+        fitted_model <- fit(
+          tuning_workflow,
+          data = fold_data$analysis
+        )
+
+        predictions <- predict(
+          fitted_model,
+          new_data = fold_data$assessment,
+          type = "prob"
+        )
+
+        tibble(
+          config_id = config$config_id,
+          fold = i,
+          auc = roc_auc_vec(
+            truth = fold_data$assessment$target,
+            estimate = predictions[[".pred_Payment difficulties"]],
+            event_level = "second"
+          )
+        )
+      }
+    )
+  }
+)
+
+# Summarize performance across folds
+tuning_summary <- tuning_results %>%
+  group_by(config_id) %>%
+  summarise(
+    mean_auc = mean(auc),
+    sd_auc = sd(auc),
+    .groups = "drop"
+  ) %>%
+  left_join(tuning_grid, by = "config_id") %>%
+  arrange(desc(mean_auc))
+
+tuning_summary
+```
+
+```{r}
+
+# Display the best-performing configuration
+
+best_config <- tuning_summary %>%
+  slice_max(mean_auc, n = 1, with_ties = FALSE)
+
+best_config
+```
+
+### Hyperparameter Tuning Results
+
+A randomized hyperparameter search evaluated 20 XGBoost configurations using three-fold stratified cross-validation on a 10% sample of the training data. The search explored tree count, tree depth, learning rate, minimum node size, loss reduction, observation sampling, and predictor sampling.
+
+The best-performing configuration achieved a mean ROC AUC of **0.747**, with a standard deviation of 0.0115 across the three validation folds. The selected configuration included 300 trees, a maximum tree depth of 7, a learning rate of 0.014, a minimum node size of 24, a loss reduction value of 0.304, a sample size of 0.630, and a predictor sampling proportion of 0.689.
+
+This configuration was selected for final model training and evaluation. Because hyperparameter tuning was conducted on a sample of the training data, performance will be reassessed using the full training dataset.
+
+# 8. Final Model Training and Evaluation
+
+## Holdout Validation
+```{r}
+
+# Create an independent 80/20 stratified split
+
+set.seed(2026)
+
+final_split <- initial_split(
+  modeling_raw,
+  prop = 0.80,
+  strata = target
+)
+
+final_train_raw <- analysis(final_split)
+final_valid_raw <- assessment(final_split)
+
+# Check target distribution and sample sizes
+
+tibble(
+  dataset = c("Training", "Validation"),
+  observations = c(
+    nrow(final_train_raw),
+    nrow(final_valid_raw)
+  ),
+  payment_difficulty_rate = c(
+    mean(final_train_raw$target == "Payment difficulties"),
+    mean(final_valid_raw$target == "Payment difficulties")
+  )
+)
+```
+```{r}
+
+# Fit preprocessing using the 80% training split only
+
+final_preprocessor <- fit_preprocessor(final_train_raw)
+
+final_train <- apply_preprocessor(
+  final_train_raw,
+  final_preprocessor
+) %>%
+  select(-sk_id_curr)
+
+final_valid <- apply_preprocessor(
+  final_valid_raw,
+  final_preprocessor
+) %>%
+  select(-sk_id_curr)
+
+# Confirm matching predictors and no missing values
+
+stopifnot(
+  identical(
+    setdiff(names(final_train), "target"),
+    setdiff(names(final_valid), "target")
+  ),
+  !anyNA(final_train),
+  !anyNA(final_valid)
+)
+```
+
+## Final Model Training and Evaluation Results
+
+```{r}
+
+# Define the selected XGBoost configuration
+
+final_xgb_spec <- boost_tree(
+  trees = 300,
+  tree_depth = 7,
+  learn_rate = 0.014,
+  min_n = 24,
+  loss_reduction = 0.304,
+  sample_size = 0.630,
+  mtry = 0.689
+) %>%
+  set_engine(
+    "xgboost",
+    eval_metric = "auc",
+    nthread = 4,
+    counts = FALSE
+  ) %>%
+  set_mode("classification")
+
+# Create model recipe
+
+final_recipe <- recipe(
+  target ~ .,
+  data = final_train
+) %>%
+  step_unknown(all_nominal_predictors()) %>%
+  step_novel(all_nominal_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_zv(all_predictors())
+
+# Fit model
+
+final_workflow <- workflow() %>%
+  add_recipe(final_recipe) %>%
+  add_model(final_xgb_spec)
+
+final_validation_model <- fit(
+  final_workflow,
+  data = final_train
+)
+
+# Predict probabilities on untouched validation data
+
+validation_predictions <- predict(
+  final_validation_model,
+  new_data = final_valid,
+  type = "prob"
+)
+
+validation_results <- tibble(
+  truth = final_valid$target,
+  probability = validation_predictions[[".pred_Payment difficulties"]]
+) %>%
+  mutate(
+    predicted = factor(
+      if_else(
+        probability >= 0.5,
+        "Payment difficulties",
+        "No payment difficulties"
+      ),
+      levels = levels(truth)
+    )
+  )
+
+# Calculate evaluation metrics
+
+final_metrics <- tibble(
+  metric = c(
+    "ROC AUC",
+    "Accuracy",
+    "Sensitivity (Recall)",
+    "Specificity",
+    "Precision"
+  ),
+  value = c(
+    roc_auc_vec(
+      validation_results$truth,
+      validation_results$probability,
+      event_level = "second"
+    ),
+    accuracy_vec(
+      validation_results$truth,
+      validation_results$predicted
+    ),
+    sens_vec(
+      validation_results$truth,
+      validation_results$predicted,
+      event_level = "second"
+    ),
+    spec_vec(
+      validation_results$truth,
+      validation_results$predicted,
+      event_level = "second"
+    ),
+    precision_vec(
+      validation_results$truth,
+      validation_results$predicted,
+      event_level = "second"
+    )
+  )
+)
+
+final_metrics
+```
+```{r}
+
+# Evaluate different classification thresholds
+
+threshold_results <- map_dfr(
+  seq(0.05, 0.50, by = 0.05),
+  function(threshold) {
+
+    predictions <- factor(
+      if_else(
+        validation_results$probability >= threshold,
+        "Payment difficulties",
+        "No payment difficulties"
+      ),
+      levels = levels(validation_results$truth)
+    )
+
+    tibble(
+      threshold = threshold,
+      sensitivity = sens_vec(
+        validation_results$truth,
+        predictions,
+        event_level = "second"
+      ),
+      specificity = spec_vec(
+        validation_results$truth,
+        predictions,
+        event_level = "second"
+      ),
+      precision = precision_vec(
+        validation_results$truth,
+        predictions,
+        event_level = "second"
+      ),
+      accuracy = accuracy_vec(
+        validation_results$truth,
+        predictions
+      )
+    )
+  }
+)
+
+threshold_results
+
+```
+
+### Classification Threshold Analysis
+
+The model's classification performance was further evaluated across thresholds ranging from 0.05 to 0.50. Results demonstrated a substantial tradeoff between sensitivity and specificity.
+
+At the default threshold of 0.50, sensitivity was only 0.71%, indicating that the model identified very few applicants who experienced payment difficulties. However, lowering the threshold to 0.10 increased sensitivity to 60.9%, with specificity of 77.7% and precision of 19.7%.
+
+At a threshold of 0.05, sensitivity increased further to 85.5%, although specificity declined to 46.9%. These results demonstrate that classification thresholds should be selected based on the relative business costs of false negatives and false positives.
+
+For illustrative purposes, a threshold of 0.10 provides a more balanced tradeoff than the default 0.50 threshold. The model's predicted probabilities will be retained for the Kaggle submission rather than converted into binary classifications.
+
+```{r}
+
+# Fit preprocessing using the entire training dataset
+
+full_preprocessor <- fit_preprocessor(modeling_raw)
+
+full_train <- apply_preprocessor(
+  modeling_raw,
+  full_preprocessor
+) %>%
+  select(-sk_id_curr)
+
+# Preserve test IDs for the Kaggle submission
+
+test_ids <- application_test$sk_id_curr
+
+# Prepare test predictors using full-training preprocessing
+
+full_test <- apply_preprocessor(
+  application_test,
+  full_preprocessor
+) %>%
+  select(-sk_id_curr)
+
+# Train final model on all training observations
+
+final_recipe_full <- recipe(
+  target ~ .,
+  data = full_train
+) %>%
+  step_unknown(all_nominal_predictors()) %>%
+  step_novel(all_nominal_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_zv(all_predictors())
+
+final_workflow_full <- workflow() %>%
+  add_recipe(final_recipe_full) %>%
+  add_model(final_xgb_spec)
+
+final_model <- fit(
+  final_workflow_full,
+  data = full_train
+)
+
+cat("Final model trained on", nrow(full_train), "observations.\n")
+cat("Test observations ready:", nrow(full_test), "\n")
+```
+
+# 9. Kaggle Submission
+
+## Generate predicted probabilities for the Kaggle test dataset
+```{r}
+
+# Generate predicted probabilities for the test dataset
+
+test_predictions <- predict(
+  final_model,
+  new_data = full_test,
+  type = "prob"
+)
+
+# Extract probability of payment difficulties
+
+submission <- tibble(
+  SK_ID_CURR = test_ids,
+  TARGET = test_predictions[[".pred_Payment difficulties"]]
+)
+
+# Inspect predictions
+
+summary(submission$TARGET)
+
+head(submission)
+
+```
+
+## Validate submission and format
+
+```{r}
+# Validate submission structure
+
+stopifnot(
+  nrow(submission) == nrow(application_test),
+  !anyNA(submission),
+  all(submission$TARGET >= 0 & submission$TARGET <= 1),
+  !anyDuplicated(submission$SK_ID_CURR)
+)
+
+# Export Kaggle submission file
+
+write_csv(
+  submission,
+  "submission.csv"
+)
+
+cat("Submission file created successfully!\n")
+cat("Rows:", nrow(submission), "\n")
+cat("Columns:", ncol(submission), "\n")
+```
+
+## Kaggle Submission Results
+
+The final XGBoost model achieved a **public leaderboard ROC AUC of 0.75575** and a **private leaderboard ROC AUC of 0.75231**.
+
+Kaggle evaluates submissions using separate public and private portions of the test dataset. The public score reflects performance on the publicly scored subset, while the private score provides the final evaluation on the larger held-out subset.
+
+The relatively small difference between the two scores suggests consistent predictive performance across both evaluation subsets. The private leaderboard score of **0.75231** is reported as the final competition evaluation result.
+
+# 10. Results and Conclusions
+
+## Model Performance Summary
+
+Three classification algorithms were evaluated using stratified three-fold cross-validation: logistic regression, random forest, and XGBoost. XGBoost achieved the strongest initial performance, with a mean ROC AUC of 0.765, compared with 0.749 for logistic regression and 0.725 for random forest.
+
+Class imbalance experiments evaluated the original target distribution, majority-class downsampling, and SMOTE oversampling. The original class distribution performed best, achieving a mean ROC AUC of 0.738, compared with 0.714 for downsampling and 0.675 for SMOTE. Based on these findings, the original class distribution was retained.
+
+A randomized hyperparameter search evaluated 20 XGBoost configurations using three-fold cross-validation on a 10% sample of the training data. The best configuration achieved a mean ROC AUC of 0.747 and was selected for final model training.
+
+## Final Model Evaluation
+
+The selected XGBoost configuration was evaluated using an 80/20 stratified training and validation split. The validation results were:
+| Metric               | Result |
+|----------------------|-------:|
+| ROC AUC              |  0.761 |
+| Accuracy             |  91.8% |
+| Sensitivity (Recall) |  0.71% |
+| Specificity          |  99.9% |
+| Precision            |  52.2% |
+
+The ROC AUC indicated that the model demonstrated useful ability to distinguish between applicants who experienced payment difficulties and those who did not. However, the default classification threshold of 0.50 resulted in very low sensitivity.
+
+A classification threshold analysis demonstrated that lowering the threshold to 0.10 increased sensitivity to 60.9%, with specificity of 77.7% and precision of 19.7%. This highlighted the tradeoff between identifying more potentially high-risk applicants and increasing false-positive classifications.
+
+The final model was subsequently trained using the full training dataset and generated predicted probabilities for the competition test dataset.
+
+## Kaggle Submission Results
+
+The final submission achieved the following competition scores:
+| Leaderboard | ROC AUC |
+|-------------|--------:|
+| Public      | 0.75575 |
+| Private     | 0.75231 |
+
+The relatively small difference between the public and private scores suggests consistent performance across the two competition evaluation subsets.
+
+The predicted probabilities ranged from 0.0084 to 0.6458, with a mean of 0.0810. This mean was close to the training dataset's payment-difficulty rate of approximately 8.07%. Although this similarity does not independently establish probability calibration, it provides a useful prediction-distribution sanity check.
+
+## Conclusions and Business Implications
+
+This project demonstrated the development of an end-to-end predictive modeling pipeline for identifying applicants at risk of experiencing loan repayment difficulties.
+
+XGBoost outperformed the other candidate models and provided the strongest initial cross-validation results. Class imbalance experiments showed that preserving the original target distribution was more effective than downsampling or SMOTE for this dataset. Randomized hyperparameter tuning provided an efficient approach to improving the selected model without requiring exhaustive grid search.
+
+The results also demonstrated that predictive ranking and binary classification are different objectives. Although the model achieved a Kaggle private leaderboard ROC AUC of 0.75231, its default classification threshold was not effective at identifying the minority class. Lowering the threshold substantially increased recall, illustrating how classification decisions should reflect the relative costs of missed high-risk applicants and false-positive alerts.
+
+In a practical lending environment, this model could serve as a decision-support tool to help prioritize applications for additional review. However, further work would be necessary before operational use, including probability calibration, threshold optimization based on business costs, fairness and bias assessment, and additional validation on representative applicant populations.
+
+Overall, the project demonstrated the value of systematic data preparation, feature engineering, model comparison, cross-validation, hyperparameter optimization, and evaluation using metrics appropriate for an imbalanced classification problem.
