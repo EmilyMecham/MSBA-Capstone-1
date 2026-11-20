@@ -44,14 +44,35 @@ library(xgboost)
 library(themis)
 library(pROC)
 library(glmnet)
+library(here)
+
+# Load reusable data preparation functions
+
+source(
+  here("E.Mecham.Data.Preparation.R")
+)
+
+# Load raw training and test datasets for modeling workflows
+
+application_train <- read_csv(
+  here("data", "application_train.csv"),
+  show_col_types = FALSE
+) %>%
+  janitor::clean_names()
+
+application_test <- read_csv(
+  here("data", "application_test.csv"),
+  show_col_types = FALSE
+) %>%
+  janitor::clean_names()
 
 # Load prepared training and test datasets
 modeling_train <- readRDS(
-  "data/processed/prepared_train.rds"
+  here("data", "processed", "prepared_train.rds")
 )
 
 modeling_test <- readRDS(
-  "data/processed/prepared_test.rds"
+  here("data", "processed", "prepared_test.rds")
 )
 
 # Convert TARGET into a factor for classification
